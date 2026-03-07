@@ -23,7 +23,7 @@ import (
 	productionpg "github.com/dbaratey/florist-core/internal/production/infrastructure/postgres"
 	storefronthttp "github.com/dbaratey/florist-core/internal/storefront/http"
 	sharedpg "github.com/dbaratey/florist-core/internal/shared/postgres"
-	"github.com/dbaratey/florist-core/internal/shared/infrastructure/postgres"
+	sharedinfrapg "github.com/dbaratey/florist-core/internal/shared/infrastructure/postgres"
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/redis"
 )
 
@@ -39,7 +39,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DSN)
+	pool, err := sharedinfrapg.NewPool(ctx, cfg.DSN)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "err", err)
 		os.Exit(1)
@@ -51,6 +51,9 @@ func main() {
 
 	// EventPublisher: writes domain events into outbox_events table
 	publisher := sharedpg.NewOutboxEventPublisher(pool)
+
+	// TxRunner: wraps pgx transactions
+	txRunner := sharedinfrapg.NewTxRunner(pool)
 
 	// OutboxWorker: polls outbox_events and dispatches to in-process handler
 	outboxWorker := sharedpg.NewOutboxWorker(
@@ -73,8 +76,9 @@ func main() {
 
 	// --- Application handlers ---
 	inventoryHandlers := inventoryhttp.NewHandlers(
-		application.NewReceiveBatchHandler(batchRepo, publisher),
-		application.NewConsumeBatchHandler(batchRepo, publisher),
+		application.NewReceiveBatchHandler(batchRepo, txRunner, publisher),
+		application.NewConsumeBatchHandler(batchRepo, txRunner, publisher),
+		application.NewWriteOffBatchHandler(batchRepo, txRunner, publisher),
 	)
 
 	orderHandlers := orderinghttp.NewHandlers(
