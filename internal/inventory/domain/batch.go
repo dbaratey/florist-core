@@ -86,6 +86,14 @@ func (b *Batch) Consume(qty int) error {
 		return ErrInsufficientBatch
 	}
 	b.remainingQty -= qty
+		b.recordEvent(BatchConsumedEvent{
+		BaseEvent:    kernel.NewBaseEvent("inventory.batch_consumed"),
+		BatchID:      b.id,
+		IngredientID: b.ingredientID,
+		StoreID:      b.storeID,
+		QtyConsumed:  qty,
+		RemainingQty: b.remainingQty,
+	})
 	return nil
 }
 
