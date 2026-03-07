@@ -1,165 +1,161 @@
-# Architecture
+# Архитектура
 
-## Overview
+## Обзор
 
-`florist-core` is a **modular monolith** backend built with **Domain-Driven Design (DDD)** principles. The system provides core functionality for independent flower shops and local marketplace aggregators.
+`florist-core` — это бэкенд на базе **модульного монолита**, построенный по принципам **Domain-Driven Design (DDD)**. Система обеспечивает основную функциональность для независимых цветочных магазинов и локальных агрегаторов маркетплейсов.
 
-## Architectural Principles
+## Архитектурные принципы
 
-### 1. Modular Monolith
+### 1. Модульный монолит
 
-- **One deployable unit**: Single binary, one database
-- **Isolated bounded contexts**: Modules communicate through application services and domain events
-- **No direct package imports**: Contexts never import each other's internals
-- **Clear module boundaries**: Each bounded context is self-contained
+*   • **Единый юнит развертывания**: Один бинарный файл, одна база данных.
+*   • **Изолированные ограниченные контексты**: Модули взаимодействуют через сервисы приложений и доменные события.
+*   • **Отсутствие прямых импортов пакетов**: Контексты никогда не импортируют внутренние структуры друг друга.
+*   • **Четкие границы модулей**: Каждый контекст самодостаточен.
 
 ### 2. Domain-Driven Design (DDD)
 
-#### Layered Architecture
+#### Слоистая архитектура
 
-Each bounded context follows a strict 4-layer architecture:
+Каждый контекст следует строгой 4-слойной архитектуре:
 
-```
-/internal/<context>/
-  /domain          # Value objects, Entities, Aggregates, Domain events
-  /application     # Use-case handlers (Commands/Queries)
-  /infrastructure  # Repositories, External services, Persistence
-  /http            # HTTP handlers, DTOs, REST API
-```
+`/internal/<context>/
+  /domain        # Объекты значений, сущности, агрегаты, доменные события
+  /application   # Обработчики сценариев (команды/запросы)
+  /infrastructure # Репозитории, внешние сервисы, работа с БД
+  /http          # HTTP-обработчики, DTO, REST API`
 
-**Layer Dependencies** (inner → outer):
-- `domain` → (no dependencies)
-- `application` → `domain`
-- `infrastructure` → `domain`, `application`
-- `http` → `application`
+**Зависимости слоев** (изнутри наружу):
 
-#### Key DDD Patterns
+*   • `domain` → (нет зависимостей)
+*   • `application` → `domain`
+*   • `infrastructure` → `domain`, `application`
+*   • `http` → `application`
 
-- **Aggregate Roots**: `Order`, `Batch`, `Recipe`
-- **Value Objects**: `Money`, `ProductID`, etc.
-- **Domain Events**: Published via Outbox pattern
-- **Repository Pattern**: Abstractions in `application`, implementations in `infrastructure`
-- **Application Handlers**: One handler per use-case (Command/Query separation)
+#### Ключевые паттерны DDD
 
-### 3. Bounded Contexts
+*   • **Корневые агрегаты (Aggregate Roots)**: `Order`, `Batch`, `Recipe`.
+*   • **Объекты значений (Value Objects)**: `Money`, `ProductID` и т.д.
+*   • **Доменные события**: Публикуются через паттерн Outbox.
+*   • **Паттерн Репозиторий**: Абстракции в `application`, реализации в `infrastructure`.
+*   • **Обработчики приложений**: Один обработчик на сценарий использования (разделение команд и запросов).
 
-```
-/internal/
-  /inventory/      # Batch management (freshness, FEFO)
-  /ordering/       # Order lifecycle, confirmations
-  /production/     # Recipe management, substitutions (future)
-  /catalog/        # Product catalog, ingredients (future)
-  /merchant/       # Store settings (future)
-  /shared/         # Cross-cutting concerns (postgres, outbox, events)
-```
+### 3. Ограниченные контексты
 
-**Communication**:
-- Synchronous: Through application service interfaces
-- Asynchronous: Domain events via Outbox + Event Publisher
+`/internal/
+  /inventory/     # Управление партиями (свежесть, FEFO)
+  /ordering/      # Жизненный цикл заказа, подтверждения
+  /production/    # Управление рецептами (в планах)
+  /catalog/       # Каталог товаров, ингредиенты (в планах)
+  /merchant/      # Настройки магазина (в планах)
+  /shared/        # Общая инфраструктура (postgres, outbox, события)`
 
-### 4. Transactional Outbox Pattern
+**Взаимодействие**:
 
-Used for reliable event publishing:
+*   • **Синхронное**: Через интерфейсы сервисов приложений.
+*   • **Асинхронное**: Доменные события через Outbox + Event Publisher.
 
-1. Business logic + event stored in single DB transaction
-2. Background worker polls `outbox` table
-3. Events published to message broker (future: Redis, Kafka)
-4. Ensures eventual consistency across contexts
+### 4. Транзакционный паттерн Outbox
 
-## Directory Structure
+Используется для надежной публикации событий:
 
-```
-florist-core/
+1.  Бизнес-логика + событие сохраняются в одной транзакции БД.
+2.  Фоновый воркер опрашивает таблицу `outbox`.
+3.  События публикуются в брокер сообщений (в будущем: Redis, Kafka).
+4.  Обеспечивает итоговую согласованность (eventual consistency) между контекстами.
+
+## Структура директорий
+
+`florist-core/
 ├── cmd/
-│   └── api/                  # Entry point, DI wiring
+│   └── api/              # Точка входа, настройка DI
 │       ├── main.go
 │       └── config.go
 ├── internal/
-│   ├── inventory/           # Bounded Context: Inventory
-│   │   ├── domain/          # Batch, allocation logic
-│   │   ├── application/     # ReceiveBatch, ConsumeBatch handlers
-│   │   ├── infrastructure/  # postgres/ (BatchRepository)
-│   │   └── http/            # REST handlers
-│   ├── ordering/            # Bounded Context: Ordering
-│   │   ├── domain/          # Order aggregate
-│   │   ├── application/     # ConfirmOrder handler
-│   │   ├── infrastructure/  # postgres/ (OrderRepository)
-│   │   └── http/            # REST handlers
-│   └── shared/              # Shared infrastructure
+│   ├── inventory/        # Контекст: Инвентарь
+│   │   ├── domain/       # Партии, логика распределения
+│   │   ├── application/  # Обработчики приемки и списания партий
+│   │   ├── infrastructure/ # postgres/ (BatchRepository)
+│   │   └── http/         # REST-обработчики
+│   ├── ordering/         # Контекст: Заказы
+│   │   ├── domain/       # Агрегат Заказа
+│   │   ├── application/  # Обработчик подтверждения заказа
+│   │   ├── infrastructure/ # postgres/ (OrderRepository)
+│   │   └── http/         # REST-обработчики
+│   └── shared/           # Общая инфраструктура
 │       ├── infrastructure/
-│       │   ├── postgres/    # Connection pool
-│       │   └── outbox/      # Outbox publisher
-│       └── domain/          # Shared value objects (future)
-├── migrations/              # SQL schema migrations
-├── docs/                    # Documentation
-└── docker-compose.yml       # Local dev environment
-```
+│       │   ├── postgres/ # Пул соединений
+│       │   └── outbox/   # Публикатор Outbox
+│       └── domain/       # Общие объекты значений (в планах)
+├── migrations/           # SQL миграции схемы БД
+├── docs/                 # Документация
+└── docker-compose.yml    # Окружение для локальной разработки`
 
-## Key Invariants
+## Ключевые инварианты
 
-### Inventory Context
+### Контекст Инвентаря (Inventory)
 
-- **Batch**: Cannot consume expired batch; qty never goes negative
-- **FEFO (First Expired First Out)**: Allocation prioritizes expiring stock
+*   • **Партия (Batch)**: Нельзя использовать просроченную партию; количество никогда не уходит в минус.
+*   • **FEFO (First Expired First Out)**: Распределение приоритетно отдает товар с ближайшим сроком окончания.
 
-### Ordering Context
+### Контекст Заказов (Ordering)
 
-- **Order**: Confirm only if all items available; cancel releases reserves
+*   • **Заказ (Order)**: Подтверждается только если все позиции доступны; отмена заказа снимает резервы.
 
-## Technology Choices
+## Выбор технологий
 
-See [TECH_STACK.md](./TECH_STACK.md) for detailed technology decisions.
+Подробности см. в [TECH_STACK.md](TECH_STACK.md).
 
-## Integration Points
+## Точки интеграции
 
 ### HTTP API
 
-- **Router**: `chi` (v5)
-- **Logging**: `slog` (structured)
-- **Endpoints**: REST JSON
+*   • **Роутер**: `chi` (v5).
+*   • **Логирование**: `slog` (структурированное).
+*   • **Формат**: REST JSON.
 
-### Database
+### База данных
 
-- **PostgreSQL**: Single database, multi-schema (one per context)
-- **Transactions**: ACID guarantees within bounded context
-- **Migrations**: SQL-first, version-controlled
+*   • **PostgreSQL**: Единая БД, мультисхемность (одна схема на контекст).
+*   • **Транзакции**: Гарантии ACID внутри контекста.
+*   • **Миграции**: SQL-first, контроль версий.
 
-### Future: Event-Driven Communication
+### Будущее: Событийное взаимодействие
 
-- **Redis Streams** or **Kafka**: For async domain events
-- **CQRS**: Read models for complex queries
+*   • **Redis Streams** или **Kafka**: Для асинхронных доменных событий.
+*   • **CQRS**: Модели чтения для сложных аналитических запросов.
 
-## Design Decisions
+## Проектные решения
 
-### Why Modular Monolith?
+### Почему модульный монолит?
 
-- Simpler deployment and operations
-- ACID transactions within bounded contexts
-- Easy to split into microservices later if needed
+*   • Проще в развертывании и эксплуатации на старте.
+*   • ACID-транзакции внутри границ контекстов.
+*   • Легко разделить на микросервисы позже, если потребуется.
 
-### Why DDD?
+### Почему DDD?
 
-- Clear separation of business logic from infrastructure
-- Testable domain models
-- Aligns with business language (Ubiquitous Language)
+*   • Четкое отделение бизнес-логики от инфраструктуры.
+*   • Тестируемые доменные модели.
+*   • Соответствие бизнес-терминологии (единый язык).
 
-### Why Outbox Pattern?
+### Почему паттерн Outbox?
 
-- Guarantees at-least-once delivery of domain events
-- Avoids dual-write problem (database + message broker)
+*   • Гарантирует доставку событий "хотя бы один раз".
+*   • Решает проблему двойной записи (БД + брокер).
 
-## Development Workflow
+## Процесс разработки
 
-1. **Domain first**: Model aggregates, value objects, invariants
-2. **Application handlers**: Implement use-cases
-3. **Infrastructure**: Wire repositories, external services
-4. **HTTP layer**: Expose REST API
-5. **Tests**: Unit tests for domain, integration tests for handlers
+1.  **Сначала домен**: Моделирование агрегатов, объектов значений, инвариантов.
+2.  **Обработчики приложений**: Реализация сценариев использования.
+3.  **Инфраструктура**: Реализация репозиториев и внешних сервисов.
+4.  **Слой HTTP**: Настройка REST API.
+5.  **Тесты**: Unit-тесты для домена, интеграционные для обработчиков.
 
-## Future Enhancements
+## Будущие улучшения
 
-- **Production context**: Recipe management, substitution logic
-- **Catalog context**: Product/ingredient catalog
-- **Merchant context**: Multi-tenant store settings
-- **Event-driven communication**: Redis Streams/Kafka
-- **CQRS read models**: For complex analytics
+*   • **Производственный контекст**: Управление рецептами, логика замен.
+*   • **Контекст каталога**: Каталог продуктов и ингредиентов.
+*   • **Контекст мерчанта**: Настройки магазинов для разных арендаторов.
+*   • **Событийное взаимодействие**: Внедрение Redis Streams/Kafka.
+*   • **Модели чтения CQRS**: Для сложной аналитики.
