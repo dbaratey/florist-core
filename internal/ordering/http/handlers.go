@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+		"github.com/go-chi/chi/v5"
 
 	"github.com/dbaratey/florist-core/internal/ordering/application"
 )
@@ -17,9 +18,9 @@ func NewHandlers(confirmOrder *application.ConfirmOrderHandler) *Handlers {
 }
 
 // Register mounts all ordering routes on mux.
-func (h *Handlers) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/orders", h.createOrder)
-	mux.HandleFunc("POST /api/v1/orders/{id}/confirm", h.confirmOrder)
+func (h *Handlers) Register(mux *chi.Mux) {
+	mux.	mux.Post("/api/v1/orders", h.createOrder)
+	mux.	mux.Post("/api/v1/orders/{id}/confirm", h.confirmOrder)
 }
 
 // POST /api/v1/orders
