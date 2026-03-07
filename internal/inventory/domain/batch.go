@@ -35,6 +35,8 @@ type Batch struct {
 	expiresAt     time.Time
 	freshness     FreshnessState
 	version       int
+		writtenOff     bool
+	writeOffReason string
 
 	events []kernel.DomainEvent
 }
@@ -164,3 +166,50 @@ func (b *Batch) PopEvents() []kernel.DomainEvent {
 func (b *Batch) recordEvent(e kernel.DomainEvent) {
 	b.events = append(b.events, e)
 }
+
+// ErrBatchNotFound is returned when a batch cannot be found in the repository.
+var ErrBatchNotFound = errors.New("batch not found")
+
+// ErrOptimisticLock is returned when an optimistic lock conflict is detected.
+var ErrOptimisticLock = errors.New("optimistic lock conflict: batch was modified concurrently")
+
+// RehydrateParams holds all fields needed to reconstruct a Batch from storage.
+type RehydrateParams struct {
+	ID             kernel.BatchID
+	StoreID        kernel.StoreID
+	IngredientID   kernel.IngredientID
+	ReceivedQty    int
+	RemainingQty   int
+	PurchasePrice  kernel.Money
+	ReceivedAt     time.Time
+	ExpiresAt      time.Time
+	Freshness      FreshnessState
+	WrittenOff     bool
+	WriteOffReason string
+	Version        int
+}
+
+// RehydrateBatch reconstructs a Batch aggregate from persisted state (no events emitted).
+func RehydrateBatch(p RehydrateParams) *Batch {
+	return &Batch{
+		id:             p.ID,
+		storeID:        p.StoreID,
+		ingredientID:   p.IngredientID,
+		receivedQty:    p.ReceivedQty,
+		remainingQty:   p.RemainingQty,
+		purchasePrice:  p.PurchasePrice,
+		receivedAt:     p.ReceivedAt,
+		expiresAt:      p.ExpiresAt,
+		freshness:      p.Freshness,
+		writtenOff:     p.WrittenOff,
+		writeOffReason: p.WriteOffReason,
+		version:        p.Version,
+	}
+}
+
+// Additional accessors needed by infrastructure layer.
+func (b *Batch) ReceivedQty() int        { return b.receivedQty }
+func (b *Batch) PurchasePrice() kernel.Money { return b.purchasePrice }
+func (b *Batch) ReceivedAt() time.Time   { return b.receivedAt }
+func (b *Batch) IsWrittenOff() bool      { return b.writtenOff }
+func (b *Batch) WriteOffReason() string  { return b.writeOffReason }
