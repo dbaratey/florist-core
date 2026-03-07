@@ -3,22 +3,34 @@ package application
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/dbaratey/florist-core/internal/ordering/domain"
 	"github.com/dbaratey/florist-core/internal/shared/kernel"
 )
 
-// OrderRepository defines persistence operations for the Order aggregate.
+// TxRunner открывает pgx-транзакцию и передаёт её в fn.
+// Реализуется в infrastructure-слое (pgxpool.Pool).
+type TxRunner interface {
+	RunTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error
+}
+
+// OrderRepository — порт для работы с агрегатом Order.
 type OrderRepository interface {
-	GetByID(ctx context.Context, id kernel.OrderID) (*domain.Order, error)
-	Save(ctx context.Context, order *domain.Order) error
+	FindByID(ctx context.Context, id kernel.ID) (*domain.Order, error)
+	Save(ctx context.Context, o *domain.Order) error
+	Update(ctx context.Context, o *domain.Order) error
+	// Tx-варианты: записывают в уже открытую транзакцию (без своего коммита).
+	SaveTx(ctx context.Context, tx pgx.Tx, o *domain.Order) error
+	UpdateTx(ctx context.Context, tx pgx.Tx, o *domain.Order) error
 }
 
-// AvailabilityService checks whether a product can be fulfilled at a given store.
+// AvailabilityService проверяет доступность продукта в магазине.
 type AvailabilityService interface {
-	CheckProduct(ctx context.Context, storeID kernel.StoreID, productID kernel.ProductID, qty int) (AvailabilityResult, error)
+	CheckProduct(ctx context.Context, storeID kernel.ID, productID kernel.ID, qty int) (AvailabilityResult, error)
 }
 
-// AvailabilityStatus represents storefront availability state.
+// AvailabilityStatus представляет статус витрины.
 type AvailabilityStatus string
 
 const (
@@ -30,20 +42,15 @@ const (
 
 type AvailabilityResult struct {
 	Status          AvailabilityStatus
-	SubstitutionIDs []kernel.IngredientID
+	SubstitutionIDs []kernel.ID
 }
 
 func (r AvailabilityResult) CanConfirm() bool {
 	return r.Status == AvailableNow || r.Status == AvailableWithSubstitution
 }
 
-// ReservationService handles inventory reservation across batches.
+// ReservationService резервирует инвентарь для заказа.
 type ReservationService interface {
-	ReserveForOrder(ctx context.Context, orderID kernel.OrderID) error
-	ReleaseForOrder(ctx context.Context, orderID kernel.OrderID) error
-}
-
-// UnitOfWork provides transactional boundary for application handlers.
-type UnitOfWork interface {
-	Do(ctx context.Context, fn func(ctx context.Context) error) error
+	ReserveForOrder(ctx context.Context, orderID kernel.ID) error
+	ReleaseForOrder(ctx context.Context, orderID kernel.ID) error
 }
