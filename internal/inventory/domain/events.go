@@ -30,3 +30,13 @@ type BatchFreshnessChangedEvent struct {
 	BatchID  kernel.BatchID
 	NewState string
 }
+
+// BatchConsumedEvent is raised when inventory is consumed by an order or production run.
+type BatchConsumedEvent struct {
+	kernel.BaseEvent
+	BatchID      kernel.BatchID
+	IngredientID kernel.IngredientID
+	StoreID      kernel.StoreID
+	QtyConsumed  int
+	RemainingQty int
+}
