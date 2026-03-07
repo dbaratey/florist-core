@@ -20,6 +20,7 @@ import (
 	productionapp "github.com/dbaratey/florist-core/internal/production/application"
 	productionhttp "github.com/dbaratey/florist-core/internal/production/http"
 	productionpg "github.com/dbaratey/florist-core/internal/production/infrastructure/postgres"
+	storefronthttp "github.com/dbaratey/florist-core/internal/storefront/http"
 
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/outbox"
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/postgres"
@@ -60,6 +61,8 @@ func main() {
 		productionapp.NewCreateRecipeHandler(recipeRepo),
 	)
 
+	storefrontHandlers := storefronthttp.NewHandler()
+
 	// --- HTTP mux ---
 	mux := chi.NewRouter()
 	mux.Get("/healthz", healthzHandler)
@@ -67,6 +70,7 @@ func main() {
 	inventoryHandlers.Register(mux)
 	orderHandlers.Register(mux)
 	productionHandlers.Register(mux)
+	storefrontHandlers.Register(mux)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
