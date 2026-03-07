@@ -240,5 +240,66 @@ func nilableStr(s string) *string {
 	if s == "" {
 		return nil
 	}
-	return &s
+
+	
+	// ——— SaveTx — сохраняет заказ В ТРАНЗАКЦИЮ (не создаёт свою) ———
+func (r *OrderRepository) SaveTx(ctx context.Context, tx pgx.Tx, o *domain.Order) error {
+	const qOrder = `
+		INSERT INTO orders
+		(id, store_id, customer_id, status, total_price, currency, notes, version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	`
+	_, err := tx.Exec(ctx, qOrder,
+		o.ID(), o.StoreID(), o.CustomerID(),
+		string(o.Status()),
+		o.TotalPrice().Amount, o.TotalPrice().Currency,
+		nilableStr(o.Notes()),
+		o.Version(),
+	)
+	if err != nil {
+		return fmt.Errorf("OrderRepository.SaveTx: %w", err)
+	}
+	return r.upsertItems(ctx, tx, o)
+}
+
+// ——— UpdateTx — обновляет заказ В ТРАНЗАКЦИЮ (не создаёт свою) ———
+func (r *OrderRepository) UpdateTx(ctx context.Context, tx pgx.Tx, o *domain.Order) error {
+	const q = `
+		UPDATE orders SET
+			status = $1,
+			total_price = $2,
+			notes = $3,
+			version = version + 1,
+			updated_at = NOW()
+		WHERE id = $4 AND version = $5
+	`
+	tag, err := tx.Exec(ctx, q,
+		string(o.Status()),
+		o.TotalPrice().Amount,
+		nilableStr(o.Notes()),
+		o.ID(),
+		o.Version(),
+	)
+	if err != nil {
+		return fmt.Errorf("OrderRepository.UpdateTx: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("OrderRepository.UpdateTx: %w", domain.ErrOptimisticLock)
+	}
+	return r.upsertItems(ctx, tx, o)
+}
+
+// ——— RunTx — реализует TxRunner.RunTx для application-слоя ———
+func (r *OrderRepository) RunTx(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("OrderRepository.RunTx begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	if err := fn(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}return &s
 }
