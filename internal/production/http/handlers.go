@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+
 	"github.com/dbaratey/florist-core/internal/production/application"
 	"github.com/dbaratey/florist-core/internal/production/domain"
 	"github.com/dbaratey/florist-core/internal/shared/kernel"
@@ -18,7 +19,7 @@ func NewHandler(createRecipe *application.CreateRecipeHandler) *Handler {
 }
 
 func (h *Handler) Register(r chi.Router) {
-	r.Post("/production/recipes", h.CreateRecipe)
+	r.Post("/api/v1/production/recipes", h.CreateRecipe)
 }
 
 type createRecipeRequest struct {
