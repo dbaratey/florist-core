@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
 	"github.com/dbaratey/florist-core/internal/inventory/application"
 	inventoryhttp "github.com/dbaratey/florist-core/internal/inventory/http"
 	inventorypg "github.com/dbaratey/florist-core/internal/inventory/infrastructure/postgres"
@@ -21,8 +22,7 @@ import (
 	productionhttp "github.com/dbaratey/florist-core/internal/production/http"
 	productionpg "github.com/dbaratey/florist-core/internal/production/infrastructure/postgres"
 	storefronthttp "github.com/dbaratey/florist-core/internal/storefront/http"
-
-	"github.com/dbaratey/florist-core/internal/shared/infrastructure/outbox"
+	sharedpg "github.com/dbaratey/florist-core/internal/shared/postgres"
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/postgres"
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/redis"
 )
@@ -49,7 +49,24 @@ func main() {
 	redisClient := redis.MustNewClient(ctx, cfg.RedisAddr)
 	defer redisClient.Close()
 
-	publisher := outbox.NewPublisher(pool)
+	// EventPublisher: writes domain events into outbox_events table
+	publisher := sharedpg.NewOutboxEventPublisher(pool)
+
+	// OutboxWorker: polls outbox_events and dispatches to in-process handler
+	outboxWorker := sharedpg.NewOutboxWorker(
+		pool,
+		func(ctx context.Context, eventType string, payload []byte) error {
+			// TODO(006): route events to module handlers (inventory freshness, notifications)
+			slog.Info("outbox event dispatched", "event_type", eventType)
+			return nil
+		},
+		2*time.Second,
+		5,
+		logger,
+	)
+	go outboxWorker.Run(ctx)
+	slog.Info("outbox worker started")
+
 	batchRepo := inventorypg.NewBatchRepository(pool)
 	orderRepo := orderingpg.NewOrderRepository(pool)
 	recipeRepo := productionpg.NewRecipeRepository(pool)
@@ -73,7 +90,6 @@ func main() {
 	// --- HTTP mux ---
 	mux := chi.NewRouter()
 	mux.Get("/healthz", healthzHandler)
-
 	inventoryHandlers.Register(mux)
 	orderHandlers.Register(mux)
 	productionHandlers.Register(mux)
@@ -96,11 +112,9 @@ func main() {
 	}()
 
 	<-ctx.Done()
-
 	slog.Info("shutting down server...")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
-
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "err", err)
 	}
