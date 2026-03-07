@@ -25,6 +25,17 @@ type OrderRepository interface {
 	UpdateTx(ctx context.Context, tx pgx.Tx, o *domain.Order) error
 }
 
+// BatchRepository — порт для работы с партиями (батчами) товара.
+type BatchRepository interface {
+	GetByID(ctx context.Context, id domain.BatchID) (*domain.Batch, error)
+	GetBySKU(ctx context.Context, sku string) ([]*domain.Batch, error)
+	Save(ctx context.Context, b *domain.Batch) error
+	Update(ctx context.Context, b *domain.Batch) error
+	// Tx-варианты: записывают в уже открытую транзакцию (без своего коммита).
+	SaveTx(ctx context.Context, tx pgx.Tx, b *domain.Batch) error
+	UpdateTx(ctx context.Context, tx pgx.Tx, b *domain.Batch) error
+}
+
 // AvailabilityService проверяет доступность продукта в магазине.
 type AvailabilityService interface {
 	CheckProduct(ctx context.Context, storeID kernel.ID, productID kernel.ID, qty int) (AvailabilityResult, error)
