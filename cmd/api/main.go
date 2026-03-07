@@ -24,6 +24,7 @@ import (
 
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/outbox"
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/postgres"
+	"github.com/dbaratey/florist-core/internal/shared/infrastructure/redis"
 )
 
 func main() {
@@ -35,12 +36,18 @@ func main() {
 	cfg := loadConfig()
 
 	// --- Infrastructure ---
-	pool, err := postgres.NewPool(context.Background(), cfg.DSN)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	pool, err := postgres.NewPool(ctx, cfg.DSN)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "err", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
+
+	redisClient := redis.MustNewClient(ctx, cfg.RedisAddr)
+	defer redisClient.Close()
 
 	publisher := outbox.NewPublisher(pool)
 	batchRepo := inventorypg.NewBatchRepository(pool)
@@ -88,16 +95,13 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	<-ctx.Done()
 
 	slog.Info("shutting down server...")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "err", err)
 	}
 	slog.Info("server stopped")
