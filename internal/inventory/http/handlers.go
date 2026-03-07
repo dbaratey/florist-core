@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+		"github.com/go-chi/chi/v5"
 
 	"github.com/dbaratey/florist-core/internal/inventory/application"
 )
@@ -24,10 +25,7 @@ func NewHandlers(
 }
 
 // Register mounts all inventory routes on mux.
-func (h *Handlers) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/inventory/batches", h.receiveBatch)
-	mux.HandleFunc("POST /api/v1/inventory/batches/consume", h.consumeBatchHandler)
-}
+	mux.Post("/api/v1/inventory/batches/consume", h.consumeBatchHandler)}
 
 // POST /api/v1/inventory/batches
 func (h *Handlers) receiveBatchHandler(w http.ResponseWriter, r *http.Request) {
