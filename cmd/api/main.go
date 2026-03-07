@@ -5,18 +5,22 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-		"github.com/go-chi/chi/v5"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/dbaratey/florist-core/internal/inventory/application"
 	inventoryhttp "github.com/dbaratey/florist-core/internal/inventory/http"
 	inventorypg "github.com/dbaratey/florist-core/internal/inventory/infrastructure/postgres"
 	orderingapp "github.com/dbaratey/florist-core/internal/ordering/application"
 	orderinghttp "github.com/dbaratey/florist-core/internal/ordering/http"
 	orderingpg "github.com/dbaratey/florist-core/internal/ordering/infrastructure/postgres"
+	productionapp "github.com/dbaratey/florist-core/internal/production/application"
+	productionhttp "github.com/dbaratey/florist-core/internal/production/http"
+	productionpg "github.com/dbaratey/florist-core/internal/production/infrastructure/postgres"
+
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/outbox"
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/postgres"
 )
@@ -38,9 +42,9 @@ func main() {
 	defer pool.Close()
 
 	publisher := outbox.NewPublisher(pool)
-
 	batchRepo := inventorypg.NewBatchRepository(pool)
 	orderRepo := orderingpg.NewOrderRepository(pool)
+	recipeRepo := productionpg.NewRecipeRepository(pool)
 
 	// --- Application handlers ---
 	inventoryHandlers := inventoryhttp.NewHandlers(
@@ -52,14 +56,20 @@ func main() {
 		orderingapp.NewConfirmOrderHandler(orderRepo, batchRepo, publisher),
 	)
 
+	productionHandlers := productionhttp.NewHandler(
+		productionapp.NewCreateRecipeHandler(recipeRepo),
+	)
+
 	// --- HTTP mux ---
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthzHandler)
+	mux := chi.NewRouter()
+	mux.Get("/healthz", healthzHandler)
+
 	inventoryHandlers.Register(mux)
 	orderHandlers.Register(mux)
+	productionHandlers.Register(mux)
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%c", cfg.Port),
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -89,7 +99,7 @@ func main() {
 	slog.Info("server stopped")
 }
 
-func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status":"ok"}`))
+	w.Write([]byte("ok"))
 }
