@@ -122,3 +122,11 @@ func (q Quantity) Sub(other Quantity) (Quantity, error) {
 }
 
 func (q Quantity) IsZero() bool { return q.Value == 0 }
+
+// Freshness age thresholds used by RecalcFreshnessHandler.
+const (
+	// AgingThreshold: batches become "aging" when expiry is within 48h.
+	AgingThreshold = 48 * time.Hour
+	// CriticalThreshold: batches become "critical" when expiry is within 24h.
+	CriticalThreshold = 24 * time.Hour
+)
