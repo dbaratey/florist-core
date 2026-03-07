@@ -9,6 +9,15 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/dbaratey/florist-core/internal/inventory/application"
+	inventoryhttp "github.com/dbaratey/florist-core/internal/inventory/http"
+	inventorypg "github.com/dbaratey/florist-core/internal/inventory/infrastructure/postgres"
+	orderingapp "github.com/dbaratey/florist-core/internal/ordering/application"
+	orderinghttp "github.com/dbaratey/florist-core/internal/ordering/http"
+	orderingpg "github.com/dbaratey/florist-core/internal/ordering/infrastructure/postgres"
+	"github.com/dbaratey/florist-core/internal/shared/infrastructure/outbox"
+	"github.com/dbaratey/florist-core/internal/shared/infrastructure/postgres"
 )
 
 func main() {
@@ -19,29 +28,37 @@ func main() {
 
 	cfg := loadConfig()
 
-	// TODO: инициализация зависимостей (вынесено за скобку по принципу DI)
-	// db := postgres.Connect(cfg.DSN)
-	// redis := redisclient.Connect(cfg.RedisAddr)
-	// publisher := outbox.NewPublisher(db)
-	// batchRepo := postgres.NewBatchRepository(db)
-	// orderRepo := postgres.NewOrderRepository(db)
-	//
-	// inventoryHandlers := inventoryhttp.NewHandlers(
-	//     inventory_app.NewReceiveBatchHandler(batchRepo, publisher),
-	//     inventory_app.NewConsumeBatchHandler(batchRepo, publisher),
-	// )
-	// orderHandlers := orderinghttp.NewHandlers(
-	//     ordering_app.NewConfirmOrderHandler(orderRepo, batchRepo, publisher),
-	// )
+	// --- Infrastructure ---
+	pool, err := postgres.NewPool(context.Background(), cfg.DSN)
+	if err != nil {
+		slog.Error("failed to connect to postgres", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
 
+	publisher := outbox.NewPublisher(pool)
+
+	batchRepo := inventorypg.NewBatchRepository(pool)
+	orderRepo := orderingpg.NewOrderRepository(pool)
+
+	// --- Application handlers ---
+	inventoryHandlers := inventoryhttp.NewHandlers(
+		application.NewReceiveBatchHandler(batchRepo, publisher),
+		application.NewConsumeBatchHandler(batchRepo, publisher),
+	)
+
+	orderHandlers := orderinghttp.NewHandlers(
+		orderingapp.NewConfirmOrderHandler(orderRepo, batchRepo, publisher),
+	)
+
+	// --- HTTP mux ---
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
-	// Регистрация маршрутов (WIP)
-	// inventoryHandlers.Register(mux)
-	// orderHandlers.Register(mux)
+	inventoryHandlers.Register(mux)
+	orderHandlers.Register(mux)
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", cfg.Port),
+		Addr:         fmt.Sprintf(":%c", cfg.Port),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -56,7 +73,7 @@ func main() {
 		}
 	}()
 
-	// Грацефульный шатдаун
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -66,36 +83,12 @@ func main() {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		slog.Error("graceful shutdown failed", "err", err)
+		slog.Error("shutdown error", "err", err)
 	}
 	slog.Info("server stopped")
 }
 
-func healthzHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status":"ok","service":"florist-core"}`))
-}
-
-type Config struct {
-	Port      string
-	DSN       string
-	RedisAddr string
-	LogLevel  string
-}
-
-func loadConfig() Config {
-	return Config{
-		Port:      getEnv("PORT", "8080"),
-		DSN:       getEnv("DATABASE_URL", "postgres://florist:florist@localhost:5432/floristdb?sslmode=disable"),
-		RedisAddr: getEnv("REDIS_ADDR", "localhost:6379"),
-		LogLevel:  getEnv("LOG_LEVEL", "info"),
-	}
-}
-
-func getEnv(key, defaultVal string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return defaultVal
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
