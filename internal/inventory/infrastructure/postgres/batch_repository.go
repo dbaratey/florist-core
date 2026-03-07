@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// BatchRepository — Postgres-реализация порта inventory/application.BatchRepository
+// BatchRepository — Postgres-реализация domain.BatchRepository.
 type BatchRepository struct {
 	pool *pgxpool.Pool
 }
@@ -21,12 +21,11 @@ func NewBatchRepository(pool *pgxpool.Pool) *BatchRepository {
 	return &BatchRepository{pool: pool}
 }
 
-// ——— batchRow — внутренний DTO для scan ———
-
+// ——— batchRow — scan DTO ———
 type batchRow struct {
-	ID             [16]byte
-	StoreID        [16]byte
-	IngredientID   [16]byte
+	ID             string
+	StoreID        string
+	IngredientID   string
 	ReceivedQty    int32
 	RemainingQty   int32
 	PurchasePrice  int64
@@ -39,11 +38,55 @@ type batchRow struct {
 	Version        int
 }
 
+const batchSelectCols = `
+	id::text, store_id::text, ingredient_id::text,
+	received_qty, remaining_qty,
+	purchase_price, currency,
+	received_at, expires_at,
+	freshness, written_off, write_off_reason, version`
+
+func scanBatch(row pgx.Row) (*domain.Batch, error) {
+	var r batchRow
+	err := row.Scan(
+		&r.ID, &r.StoreID, &r.IngredientID,
+		&r.ReceivedQty, &r.RemainingQty,
+		&r.PurchasePrice, &r.Currency,
+		&r.ReceivedAt, &r.ExpiresAt,
+		&r.Freshness, &r.WrittenOff, &r.WriteOffReason, &r.Version,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return rowToBatch(r), nil
+}
+
+func scanBatches(rows pgx.Rows) ([]*domain.Batch, error) {
+	defer rows.Close()
+	var result []*domain.Batch
+	for rows.Next() {
+		var r batchRow
+		if err := rows.Scan(
+			&r.ID, &r.StoreID, &r.IngredientID,
+			&r.ReceivedQty, &r.RemainingQty,
+			&r.PurchasePrice, &r.Currency,
+			&r.ReceivedAt, &r.ExpiresAt,
+			&r.Freshness, &r.WrittenOff, &r.WriteOffReason, &r.Version,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, rowToBatch(r))
+	}
+	return result, rows.Err()
+}
+
 func rowToBatch(r batchRow) *domain.Batch {
+	id, _ := kernel.ParseID(r.ID)
+	storeID, _ := kernel.ParseID(r.StoreID)
+	ingredientID, _ := kernel.ParseID(r.IngredientID)
 	return domain.RehydrateBatch(domain.RehydrateParams{
-		ID:             kernel.ID(r.ID),
-		StoreID:        kernel.ID(r.StoreID),
-		IngredientID:   kernel.ID(r.IngredientID),
+		ID:             kernel.BatchID{ID: id},
+		StoreID:        kernel.StoreID{ID: storeID},
+		IngredientID:   kernel.IngredientID{ID: ingredientID},
 		ReceivedQty:    int(r.ReceivedQty),
 		RemainingQty:   int(r.RemainingQty),
 		PurchasePrice:  kernel.NewMoney(r.PurchasePrice, r.Currency),
@@ -63,132 +106,116 @@ func ptrStr(s *string) string {
 	return *s
 }
 
-// ——— Save ———
+func nilableStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
 
+// ——— Save (upsert + optimistic lock) ———
 func (r *BatchRepository) Save(ctx context.Context, b *domain.Batch) error {
 	const q = `
 		INSERT INTO inventory_batches
 			(id, store_id, ingredient_id, received_qty, remaining_qty,
-			 purchase_price, currency, received_at, expires_at, freshness, version)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			 purchase_price, currency, received_at, expires_at,
+			 freshness, written_off, write_off_reason, version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (id) DO UPDATE SET
+			remaining_qty    = EXCLUDED.remaining_qty,
+			freshness        = EXCLUDED.freshness,
+			written_off      = EXCLUDED.written_off,
+			write_off_reason = EXCLUDED.write_off_reason,
+			version          = inventory_batches.version + 1
+		WHERE inventory_batches.version = $14
 	`
-	_, err := r.pool.Exec(ctx, q,
-		b.ID(), b.StoreID(), b.IngredientID(),
+	tag, err := r.pool.Exec(ctx, q,
+		b.ID().ID.String(), b.StoreID().ID.String(), b.IngredientID().ID.String(),
 		b.ReceivedQty(), b.RemainingQty(),
 		b.PurchasePrice().Amount, b.PurchasePrice().Currency,
 		b.ReceivedAt(), b.ExpiresAt(),
 		string(b.Freshness()),
-		b.Version(),
+		b.IsWrittenOff(),
+		nilableStr(b.WriteOffReason()),
+		b.Version()+1,
+		b.Version(), // WHERE version = $14
 	)
 	if err != nil {
 		return fmt.Errorf("BatchRepository.Save: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("BatchRepository.Save: %w", domain.ErrOptimisticLock)
 	}
 	return nil
 }
 
 // ——— FindByID ———
-
-func (r *BatchRepository) FindByID(ctx context.Context, id kernel.ID) (*domain.Batch, error) {
-	const q = `
-		SELECT id, store_id, ingredient_id, received_qty, remaining_qty,
-			   purchase_price, currency, received_at, expires_at,
-			   freshness, written_off, write_off_reason, version
-		FROM inventory_batches
-		WHERE id = $1
-	`
-	row := r.pool.QueryRow(ctx, q, id)
-	var rw batchRow
-	err := row.Scan(
-		&rw.ID, &rw.StoreID, &rw.IngredientID,
-		&rw.ReceivedQty, &rw.RemainingQty,
-		&rw.PurchasePrice, &rw.Currency,
-		&rw.ReceivedAt, &rw.ExpiresAt,
-		&rw.Freshness, &rw.WrittenOff, &rw.WriteOffReason, &rw.Version,
-	)
+func (r *BatchRepository) FindByID(ctx context.Context, id kernel.BatchID) (*domain.Batch, error) {
+	q := `SELECT ` + batchSelectCols + ` FROM inventory_batches WHERE id = $1`
+	b, err := scanBatch(r.pool.QueryRow(ctx, q, id.ID.String()))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("BatchRepository.FindByID %s: %w", id, domain.ErrBatchNotFound)
+		return nil, fmt.Errorf("BatchRepository.FindByID %s: %w", id.ID.String(), domain.ErrBatchNotFound)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("BatchRepository.FindByID: %w", err)
 	}
-	return rowToBatch(rw), nil
+	return b, nil
 }
 
-// ——— FindAvailableByIngredient (FEFO — First Expired, First Out) ———
+// ——— FindActive ———
+func (r *BatchRepository) FindActive(ctx context.Context) ([]*domain.Batch, error) {
+	q := `SELECT ` + batchSelectCols + `
+		FROM inventory_batches
+		WHERE freshness != 'expired' AND remaining_qty > 0`
+	rows, err := r.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("BatchRepository.FindActive: %w", err)
+	}
+	result, err := scanBatches(rows)
+	if err != nil {
+		return nil, fmt.Errorf("BatchRepository.FindActive scan: %w", err)
+	}
+	return result, nil
+}
 
+// ——— FindByStore ———
+func (r *BatchRepository) FindByStore(ctx context.Context, storeID kernel.StoreID) ([]*domain.Batch, error) {
+	q := `SELECT ` + batchSelectCols + `
+		FROM inventory_batches
+		WHERE store_id = $1 AND freshness != 'expired' AND remaining_qty > 0
+		ORDER BY expires_at ASC`
+	rows, err := r.pool.Query(ctx, q, storeID.ID.String())
+	if err != nil {
+		return nil, fmt.Errorf("BatchRepository.FindByStore: %w", err)
+	}
+	result, err := scanBatches(rows)
+	if err != nil {
+		return nil, fmt.Errorf("BatchRepository.FindByStore scan: %w", err)
+	}
+	return result, nil
+}
+
+// ——— FindAvailableByIngredient (FEFO) ———
 func (r *BatchRepository) FindAvailableByIngredient(
 	ctx context.Context,
-	storeID kernel.ID,
-	ingredientID kernel.ID,
+	storeID kernel.StoreID,
+	ingredientID kernel.IngredientID,
 ) ([]*domain.Batch, error) {
-	const q = `
-		SELECT id, store_id, ingredient_id, received_qty, remaining_qty,
-			   purchase_price, currency, received_at, expires_at,
-			   freshness, written_off, write_off_reason, version
+	q := `SELECT ` + batchSelectCols + `
 		FROM inventory_batches
 		WHERE store_id = $1
 		  AND ingredient_id = $2
 		  AND NOT written_off
 		  AND freshness != 'expired'
 		  AND remaining_qty > 0
-		ORDER BY expires_at ASC
-	`
-	rows, err := r.pool.Query(ctx, q, storeID, ingredientID)
+		ORDER BY expires_at ASC`
+	rows, err := r.pool.Query(ctx, q, storeID.ID.String(), ingredientID.ID.String())
 	if err != nil {
 		return nil, fmt.Errorf("BatchRepository.FindAvailableByIngredient: %w", err)
 	}
-	defer rows.Close()
-
-	var result []*domain.Batch
-	for rows.Next() {
-		var rw batchRow
-		if err := rows.Scan(
-			&rw.ID, &rw.StoreID, &rw.IngredientID,
-			&rw.ReceivedQty, &rw.RemainingQty,
-			&rw.PurchasePrice, &rw.Currency,
-			&rw.ReceivedAt, &rw.ExpiresAt,
-			&rw.Freshness, &rw.WrittenOff, &rw.WriteOffReason, &rw.Version,
-		); err != nil {
-			return nil, fmt.Errorf("BatchRepository.FindAvailableByIngredient scan: %w", err)
-		}
-		result = append(result, rowToBatch(rw))
-	}
-	return result, rows.Err()
-}
-
-// ——— Update (оптимистичная блокировка через version) ———
-
-func (r *BatchRepository) Update(ctx context.Context, b *domain.Batch) error {
-	const q = `
-		UPDATE inventory_batches SET
-			remaining_qty    = $1,
-			freshness        = $2,
-			written_off      = $3,
-			write_off_reason = $4,
-			version          = version + 1,
-			updated_at       = NOW()
-		WHERE id = $5 AND version = $6
-	`
-	tag, err := r.pool.Exec(ctx, q,
-		b.RemainingQty(),
-		string(b.Freshness()),
-		b.IsWrittenOff(),
-		nilableStr(b.WriteOffReason()),
-		b.ID(),
-		b.Version(),
-	)
+	result, err := scanBatches(rows)
 	if err != nil {
-		return fmt.Errorf("BatchRepository.Update: %w", err)
+		return nil, fmt.Errorf("BatchRepository.FindAvailableByIngredient scan: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("BatchRepository.Update: %w", domain.ErrOptimisticLock)
-	}
-	return nil
-}
-
-func nilableStr(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
+	return result, nil
 }
