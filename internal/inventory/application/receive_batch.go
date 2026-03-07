@@ -4,19 +4,31 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/dbaratey/florist-core/internal/inventory/domain"
 	"github.com/dbaratey/florist-core/internal/shared/kernel"
 )
 
-// BatchRepository — порт для работы с хранилищем партий
+// TxRunner открывает pgx-транзакцию и передаёт её в fn.
+// Реализуется в infrastructure-слое.
+type TxRunner interface {
+	RunTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error
+}
+
+// BatchRepository — порт для работы с хранилищем партий.
 type BatchRepository interface {
 	Save(ctx context.Context, b *domain.Batch) error
 	FindByID(ctx context.Context, id kernel.ID) (*domain.Batch, error)
 	FindAvailableByIngredient(ctx context.Context, storeID kernel.ID, ingredientID kernel.ID) ([]*domain.Batch, error)
 	Update(ctx context.Context, b *domain.Batch) error
+	// Tx-варианты: записывают в уже открытую транзакцию (без своего коммита).
+	SaveTx(ctx context.Context, tx pgx.Tx, b *domain.Batch) error
+	UpdateTx(ctx context.Context, tx pgx.Tx, b *domain.Batch) error
 }
 
-// ReceiveBatchCommand — команда приёмки новой партии товара
+// --- ReceiveBatch ---
+
 type ReceiveBatchCommand struct {
 	StoreID      kernel.ID
 	IngredientID kernel.ID
@@ -27,19 +39,19 @@ type ReceiveBatchCommand struct {
 	ExpiresAt    time.Time
 }
 
-// ReceiveBatchHandler — use case: принять партию товара на склад
 type ReceiveBatchHandler struct {
 	repo      BatchRepository
+	txRunner  TxRunner
 	publisher kernel.EventPublisher
 }
 
-func NewReceiveBatchHandler(repo BatchRepository, publisher kernel.EventPublisher) *ReceiveBatchHandler {
-	return &ReceiveBatchHandler{repo: repo, publisher: publisher}
+func NewReceiveBatchHandler(repo BatchRepository, txRunner TxRunner, publisher kernel.EventPublisher) *ReceiveBatchHandler {
+	return &ReceiveBatchHandler{repo: repo, txRunner: txRunner, publisher: publisher}
 }
 
+// Handle: сохраняет партию + outbox атомарно.
 func (h *ReceiveBatchHandler) Handle(ctx context.Context, cmd ReceiveBatchCommand) (kernel.ID, error) {
 	price := kernel.NewMoney(cmd.PriceKopecks, cmd.Currency)
-
 	batch := domain.NewBatch(
 		cmd.StoreID,
 		cmd.IngredientID,
@@ -49,21 +61,28 @@ func (h *ReceiveBatchHandler) Handle(ctx context.Context, cmd ReceiveBatchComman
 		cmd.ExpiresAt,
 	)
 
-	if err := h.repo.Save(ctx, batch); err != nil {
+	var batchID kernel.ID
+	err := h.txRunner.RunTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.SaveTx(ctx, tx, batch); err != nil {
+			return err
+		}
+		events := batch.PullEvents()
+		if len(events) > 0 {
+			if err := h.publisher.PublishTx(ctx, tx, events...); err != nil {
+				return err
+			}
+		}
+		batchID = batch.ID()
+		return nil
+	})
+	if err != nil {
 		return kernel.ID{}, err
 	}
-
-	events := batch.PullEvents()
-	if len(events) > 0 {
-		if err := h.publisher.Publish(events...); err != nil {
-			return kernel.ID{}, err
-		}
-	}
-
-	return batch.ID(), nil
+	return batchID, nil
 }
 
-// ConsumeBatchCommand — команда списания из партии (FEFO)
+// --- ConsumeBatch ---
+
 type ConsumeBatchCommand struct {
 	BatchID kernel.ID
 	Qty     int
@@ -71,11 +90,12 @@ type ConsumeBatchCommand struct {
 
 type ConsumeBatchHandler struct {
 	repo      BatchRepository
+	txRunner  TxRunner
 	publisher kernel.EventPublisher
 }
 
-func NewConsumeBatchHandler(repo BatchRepository, publisher kernel.EventPublisher) *ConsumeBatchHandler {
-	return &ConsumeBatchHandler{repo: repo, publisher: publisher}
+func NewConsumeBatchHandler(repo BatchRepository, txRunner TxRunner, publisher kernel.EventPublisher) *ConsumeBatchHandler {
+	return &ConsumeBatchHandler{repo: repo, txRunner: txRunner, publisher: publisher}
 }
 
 func (h *ConsumeBatchHandler) Handle(ctx context.Context, cmd ConsumeBatchCommand) error {
@@ -83,33 +103,23 @@ func (h *ConsumeBatchHandler) Handle(ctx context.Context, cmd ConsumeBatchComman
 	if err != nil {
 		return err
 	}
-
 	if err := batch.Consume(cmd.Qty); err != nil {
 		return err
 	}
-
-	if err := h.repo.Update(ctx, batch); err != nil {
-		return err
-	}
-
-	events := batch.PullEvents()
-	if len(events) > 0 {
-		return h.publisher.Publish(events...)
-	}
-	return nil
+	return h.txRunner.RunTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.UpdateTx(ctx, tx, batch); err != nil {
+			return err
+		}
+		events := batch.PullEvents()
+		if len(events) > 0 {
+			return h.publisher.PublishTx(ctx, tx, events...)
+		}
+		return nil
+	})
 }
 
-// ExpireBatchesCommand — помечает просроченные партии
-type ExpireBatchesHandler struct {
-	repo      BatchRepository
-	publisher kernel.EventPublisher
-}
+// --- WriteOffBatch ---
 
-func NewExpireBatchesHandler(repo BatchRepository, publisher kernel.EventPublisher) *ExpireBatchesHandler {
-	return &ExpireBatchesHandler{repo: repo, publisher: publisher}
-}
-
-// WrittenOffBatchCommand — принудительное списание (порча, повреждение)
 type WriteOffBatchCommand struct {
 	BatchID kernel.ID
 	Reason  string
@@ -117,11 +127,12 @@ type WriteOffBatchCommand struct {
 
 type WriteOffBatchHandler struct {
 	repo      BatchRepository
+	txRunner  TxRunner
 	publisher kernel.EventPublisher
 }
 
-func NewWriteOffBatchHandler(repo BatchRepository, publisher kernel.EventPublisher) *WriteOffBatchHandler {
-	return &WriteOffBatchHandler{repo: repo, publisher: publisher}
+func NewWriteOffBatchHandler(repo BatchRepository, txRunner TxRunner, publisher kernel.EventPublisher) *WriteOffBatchHandler {
+	return &WriteOffBatchHandler{repo: repo, txRunner: txRunner, publisher: publisher}
 }
 
 func (h *WriteOffBatchHandler) Handle(ctx context.Context, cmd WriteOffBatchCommand) error {
@@ -129,18 +140,17 @@ func (h *WriteOffBatchHandler) Handle(ctx context.Context, cmd WriteOffBatchComm
 	if err != nil {
 		return err
 	}
-
 	if err := batch.WriteOff(cmd.Reason); err != nil {
 		return err
 	}
-
-	if err := h.repo.Update(ctx, batch); err != nil {
-		return err
-	}
-
-	events := batch.PullEvents()
-	if len(events) > 0 {
-		return h.publisher.Publish(events...)
-	}
-	return nil
+	return h.txRunner.RunTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.UpdateTx(ctx, tx, batch); err != nil {
+			return err
+		}
+		events := batch.PullEvents()
+		if len(events) > 0 {
+			return h.publisher.PublishTx(ctx, tx, events...)
+		}
+		return nil
+	})
 }
