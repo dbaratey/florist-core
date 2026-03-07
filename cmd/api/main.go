@@ -21,7 +21,9 @@ import (
 	productionapp "github.com/dbaratey/florist-core/internal/production/application"
 	productionhttp "github.com/dbaratey/florist-core/internal/production/http"
 	productionpg "github.com/dbaratey/florist-core/internal/production/infrastructure/postgres"
+	storefrontapp "github.com/dbaratey/florist-core/internal/storefront/application"
 	storefronthttp "github.com/dbaratey/florist-core/internal/storefront/http"
+	storefrontpg "github.com/dbaratey/florist-core/internal/storefront/infrastructure/postgres"
 	sharedpg "github.com/dbaratey/florist-core/internal/shared/postgres"
 	sharedinfrapg "github.com/dbaratey/florist-core/internal/shared/infrastructure/postgres"
 	"github.com/dbaratey/florist-core/internal/shared/infrastructure/redis"
@@ -59,6 +61,7 @@ func main() {
 	batchRepo := inventorypg.NewBatchRepository(pool)
 	orderRepo := orderingpg.NewOrderRepository(pool)
 	recipeRepo := productionpg.NewRecipeRepository(pool)
+	catalogReader := storefrontpg.NewCatalogReader(pool)
 
 	// RecalcFreshnessHandler: triggered by inventory events
 	recalcFreshness := application.NewRecalcFreshnessHandler(batchRepo)
@@ -102,7 +105,9 @@ func main() {
 		productionapp.NewCreateRecipeHandler(recipeRepo),
 	)
 
-	storefrontHandlers := storefronthttp.NewHandler()
+	storefrontHandlers := storefronthttp.NewHandler(
+		storefrontapp.NewGetCatalogHandler(catalogReader),
+	)
 
 	// --- HTTP mux ---
 	mux := chi.NewRouter()
