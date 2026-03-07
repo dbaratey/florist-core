@@ -55,12 +55,29 @@ func main() {
 	// TxRunner: wraps pgx transactions
 	txRunner := sharedinfrapg.NewTxRunner(pool)
 
-	// OutboxWorker: polls outbox_events and dispatches to in-process handler
+	// Repositories
+	batchRepo := inventorypg.NewBatchRepository(pool)
+	orderRepo := orderingpg.NewOrderRepository(pool)
+	recipeRepo := productionpg.NewRecipeRepository(pool)
+
+	// RecalcFreshnessHandler: triggered by inventory events
+	recalcFreshness := application.NewRecalcFreshnessHandler(batchRepo)
+
+	// OutboxWorker: polls outbox_events and dispatches to in-process handlers
 	outboxWorker := sharedpg.NewOutboxWorker(
 		pool,
 		func(ctx context.Context, eventType string, payload []byte) error {
-			// TODO(006): route events to module handlers (inventory freshness, notifications)
-			slog.Info("outbox event dispatched", "event_type", eventType)
+			switch eventType {
+			case "inventory.batch_consumed",
+				"inventory.batch_expired",
+				"inventory.batch_written_off":
+				if err := recalcFreshness.Handle(ctx); err != nil {
+					slog.Error("recalc freshness failed", "event_type", eventType, "err", err)
+					return err
+				}
+			default:
+				slog.Info("outbox event dispatched (no handler)", "event_type", eventType)
+			}
 			return nil
 		},
 		2*time.Second,
@@ -69,10 +86,6 @@ func main() {
 	)
 	go outboxWorker.Run(ctx)
 	slog.Info("outbox worker started")
-
-	batchRepo := inventorypg.NewBatchRepository(pool)
-	orderRepo := orderingpg.NewOrderRepository(pool)
-	recipeRepo := productionpg.NewRecipeRepository(pool)
 
 	// --- Application handlers ---
 	inventoryHandlers := inventoryhttp.NewHandlers(
