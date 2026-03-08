@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/dbaratey/florist-core/internal/production/application"
 	"github.com/dbaratey/florist-core/internal/production/domain"
@@ -12,14 +13,16 @@ import (
 
 type Handler struct {
 	createRecipe *application.CreateRecipeHandler
+	calcCost     *application.CalcCostHandler
 }
 
-func NewHandler(createRecipe *application.CreateRecipeHandler) *Handler {
-	return &Handler{createRecipe: createRecipe}
+func NewHandler(createRecipe *application.CreateRecipeHandler, calcCost *application.CalcCostHandler) *Handler {
+	return &Handler{createRecipe: createRecipe, calcCost: calcCost}
 }
 
 func (h *Handler) Register(r chi.Router) {
 	r.Post("/api/v1/production/recipes", h.CreateRecipe)
+	r.Get("/api/v1/production/recipes/{id}/cost", h.CalcCost)
 }
 
 type createRecipeRequest struct {
@@ -57,4 +60,27 @@ func (h *Handler) CreateRecipe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"id": string(id)})
+}
+
+// GET /api/v1/production/recipes/{id}/cost?qty=1
+func (h *Handler) CalcCost(w http.ResponseWriter, r *http.Request) {
+	recipeID := chi.URLParam(r, "id")
+	qty := 1
+	if q := r.URL.Query().Get("qty"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			qty = n
+		}
+	}
+
+	result, err := h.calcCost.Handle(r.Context(), application.CalcCostCommand{
+		RecipeID: recipeID,
+		Qty:      qty,
+	})
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
