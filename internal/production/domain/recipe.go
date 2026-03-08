@@ -35,10 +35,26 @@ func NewRecipe(id kernel.RecipeID, name string, ingredients []Ingredient) (*Reci
 	}
 
 	r := &Recipe{
-		id:          id,
-		name:        name,
-		ingredients: ingredients,
+			id:          id,
+			name:        name,
+			ingredients: ingredients,
 	}
 
 	return r, nil
 }
+
+// ID returns the recipe identifier.
+func (r *Recipe) ID() kernel.RecipeID { return r.id }
+
+// Name returns the recipe name.
+func (r *Recipe) Name() string { return r.name }
+
+// Ingredients returns a copy of ingredients slice (read-only access).
+func (r *Recipe) Ingredients() []Ingredient {
+	out := make([]Ingredient, len(r.ingredients))
+	copy(out, r.ingredients)
+	return out
+}
+
+// Version returns the optimistic-lock version.
+func (r *Recipe) Version() int { return r.version }
