@@ -8,6 +8,7 @@ import (
 
 type RecipeRepository interface {
 	Save(ctx context.Context, recipe *domain.Recipe) error
+	FindByID(ctx context.Context, id kernel.RecipeID) (*domain.Recipe, error)
 }
 
 type CreateRecipeCommand struct {
@@ -27,11 +28,11 @@ func (h *CreateRecipeHandler) Handle(ctx context.Context, cmd CreateRecipeComman
 	id := kernel.NewRecipeID()
 	recipe, err := domain.NewRecipe(id, cmd.Name, cmd.Ingredients)
 	if err != nil {
-		return "", err
+		return kernel.RecipeID{}, err
 	}
 
 	if err := h.repo.Save(ctx, recipe); err != nil {
-		return "", err
+		return kernel.RecipeID{}, err
 	}
 
 	return id, nil
